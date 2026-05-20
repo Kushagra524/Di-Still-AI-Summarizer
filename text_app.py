@@ -8,9 +8,10 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_community.document_loaders import YoutubeLoader, UnstructuredURLLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
+
 load_dotenv()
 
-# ── Page config ────────────────────────────────────────────────────────────────
+# Page config 
 st.set_page_config(
     page_title="Distill — AI Summarizer",
     page_icon="▲",
@@ -18,7 +19,9 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# ── Global CSS ─────────────────────────────────────────────────────────────────
+
+
+# Global CSS 
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:ital,wght@0,300;0,400;0,500;1,300&display=swap');
@@ -288,12 +291,12 @@ h1, h2, h3, h4, h5, h6 {
 </style>
 """, unsafe_allow_html=True)
 
-# ── Setup ──────────────────────────────────────────────────────────────────────
+# Setup 
 groq_api_key = os.getenv("GROQ_API_KEY")
 
 llm = ChatGroq(
     api_key=groq_api_key,
-    model="llama-3.3-70b-versatile",
+    model="meta-llama/llama-4-scout-17b-16e-instruct",
     temperature=0,
 )
 
@@ -325,34 +328,77 @@ Final summary should be educational and informative, suitable for readers who wa
 )
 
 
+import requests
+from bs4 import BeautifulSoup
+from langchain_core.documents import Document
+
+def load_url(url: str):
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    response = requests.get(url, headers=headers, timeout=15, verify=False)
+    response.raise_for_status()
+    soup = BeautifulSoup(response.text, "html.parser")
+    
+    # Remove noise
+    for tag in soup(["script", "style", "nav", "footer", "header"]):
+        tag.decompose()
+    
+    text = soup.get_text(separator="\n", strip=True)
+    return [Document(page_content=text)]
+
+
 def summarize_url(url: str) -> str:
     if "youtube.com" in url or "youtu.be" in url:
         loader = YoutubeLoader.from_youtube_url(url)
+        documents = loader.load()
     else:
-        loader = UnstructuredURLLoader(
-            urls=[url],
-            ssl_verify=False,
-            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
-        )
-    documents = loader.load()
+        documents = load_url(url)
     content = "\n".join([doc.page_content for doc in documents])
 
+    if not content.strip():
+        raise ValueError("Could not extract any content from this URL. The page may be empty or blocked.")
+
+    # Cap the content to avoid generating too many chunks for very large pages
+    MAX_CONTENT_LENGTH = 50000  # ~50k chars keeps chunks manageable
+    if len(content) > MAX_CONTENT_LENGTH:
+        content = content[:MAX_CONTENT_LENGTH]
+
     text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=2000, chunk_overlap=500, length_function=len
+        chunk_size=5000, chunk_overlap=200, length_function=len
     )
     splitted_docs = text_splitter.create_documents([content])
 
     chain = prompt | llm | StrOutputParser()
-    final_summary = ""
+
+    # Summarize each chunk individually
+    partial_summaries = []
     for doc in splitted_docs:
-        final_summary += chain.invoke({"text": doc.page_content}) + "\n\n"
+        summary_chunk = chain.invoke({"text": doc.page_content})
+        partial_summaries.append(summary_chunk)
 
+    # If only one chunk, return its summary directly — no refine step needed
+    if len(partial_summaries) == 1:
+        return partial_summaries[0]
+
+    # Combine partial summaries in batches to avoid exceeding context window
     refine_chain = refine_prompt_template | llm | StrOutputParser()
-    summary = refine_chain.invoke({"text": final_summary})
-    return summary
+    BATCH_SIZE = 5  # Combine at most 5 partial summaries at a time
+
+    while len(partial_summaries) > 1:
+        new_summaries = []
+        for i in range(0, len(partial_summaries), BATCH_SIZE):
+            batch = partial_summaries[i:i + BATCH_SIZE]
+            combined_text = "\n\n".join(batch)
+            if len(batch) == 1:
+                new_summaries.append(batch[0])
+            else:
+                refined = refine_chain.invoke({"text": combined_text})
+                new_summaries.append(refined)
+        partial_summaries = new_summaries
+
+    return partial_summaries[0]
 
 
-# ── UI ─────────────────────────────────────────────────────────────────────────
+# UI 
 
 st.markdown("""
 <div class="hero-wrap">
@@ -362,16 +408,17 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
+
 st.markdown('<div class="g-divider"></div>', unsafe_allow_html=True)
 
 # Input card
-st.markdown('<div class="input-card">', unsafe_allow_html=True)
+# st.markdown('<div class="input-card">', unsafe_allow_html=True)
 st.markdown('<div class="input-label">Source URL</div>', unsafe_allow_html=True)
 url = st.text_input("url", placeholder="https://youtube.com/watch?v=...  or any webpage", label_visibility="collapsed")
 summarize_btn = st.button("Generate Summary")
-st.markdown('</div>', unsafe_allow_html=True)
+# st.markdown('</div>', unsafe_allow_html=True)
 
-# ── Logic ──────────────────────────────────────────────────────────────────────
+# Logic 
 if summarize_btn:
     if not groq_api_key:
         st.error("GROQ_API_KEY not found. Check your .env file.")
@@ -413,3 +460,4 @@ if summarize_btn:
             st.error(f"Something went wrong: {str(e)}")
 
 st.markdown('<div class="footer-text">Distill — AI Summarization Engine</div>', unsafe_allow_html=True)
+
