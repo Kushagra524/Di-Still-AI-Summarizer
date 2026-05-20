@@ -352,10 +352,10 @@ def summarize_url(url: str) -> str:
     chain = prompt | llm | StrOutputParser()
     final_summary = ""
     for doc in splitted_docs:
-        final_summary += chain.invoke({doc.page_content}) + "\n\n"
+        final_summary += chain.invoke({"text": doc.page_content}) + "\n\n"
 
     refine_chain = refine_prompt_template | llm | StrOutputParser()
-    summary = refine_chain.invoke({final_summary})
+    summary = refine_chain.invoke({"text": final_summary})
     return summary
 
 
