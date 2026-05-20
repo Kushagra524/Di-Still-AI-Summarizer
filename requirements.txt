@@ -9,7 +9,6 @@ fitz
 pymupdf
 wikipedia
 langchain-text-splitters
-json
 requests
 langchain-openai
 sentence_transformers
