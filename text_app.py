@@ -408,6 +408,7 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
+<p class="hero-sub" style="text-align: center;">Paste any webpage , article , blog or research paperr. Get a precise, structured summary in seconds.</p>
 
 st.markdown('<div class="g-divider"></div>', unsafe_allow_html=True)
 
