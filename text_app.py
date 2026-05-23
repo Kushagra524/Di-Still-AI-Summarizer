@@ -501,19 +501,25 @@ def load_url(url: str):
     return [Document(page_content=text)]
 
 
-def summarize_url(url: str) -> str:
+def prepare_final_input(url: str) -> tuple:
+    """Loads content, chunks it, and returns (final_input_text, is_single_chunk, source_type).
+    For single chunk: returns raw chunk text.
+    For multi chunk: runs all intermediate summarizations and returns combined text for final refine.
+    """
     if "youtube.com" in url or "youtu.be" in url:
         loader = YoutubeLoader.from_youtube_url(url)
         documents = loader.load()
+        source_type = "YouTube"
     else:
         documents = load_url(url)
+        source_type = "Webpage"
+
     content = "\n".join([doc.page_content for doc in documents])
 
     if not content.strip():
         raise ValueError("Could not extract any content from this URL. The page may be empty or blocked.")
 
-    # Cap the content to avoid generating too many chunks for very large pages
-    MAX_CONTENT_LENGTH = 50000  # ~50k chars keeps chunks manageable
+    MAX_CONTENT_LENGTH = 50000
     if len(content) > MAX_CONTENT_LENGTH:
         content = content[:MAX_CONTENT_LENGTH]
 
@@ -524,19 +530,18 @@ def summarize_url(url: str) -> str:
 
     chain = prompt | llm | StrOutputParser()
 
-    # Summarize each chunk individually
+    # Single chunk — stream it directly
+    if len(splitted_docs) == 1:
+        return splitted_docs[0].page_content, True, source_type, chain
+
+    # Multi-chunk — process all intermediate chunks normally, prepare final input
     partial_summaries = []
     for doc in splitted_docs:
         summary_chunk = chain.invoke({"text": doc.page_content})
         partial_summaries.append(summary_chunk)
 
-    # If only one chunk, return its summary directly — no refine step needed
-    if len(partial_summaries) == 1:
-        return partial_summaries[0]
-
-    # Combine partial summaries in batches to avoid exceeding context window
     refine_chain = refine_prompt_template | llm | StrOutputParser()
-    BATCH_SIZE = 5  # Combine at most 5 partial summaries at a time
+    BATCH_SIZE = 5
 
     while len(partial_summaries) > 1:
         new_summaries = []
@@ -546,11 +551,15 @@ def summarize_url(url: str) -> str:
             if len(batch) == 1:
                 new_summaries.append(batch[0])
             else:
+                # Keep streaming only for the very last refine call
+                if len(partial_summaries) <= BATCH_SIZE:
+                    return combined_text, False, source_type, refine_chain
                 refined = refine_chain.invoke({"text": combined_text})
                 new_summaries.append(refined)
         partial_summaries = new_summaries
 
-    return partial_summaries[0]
+    # Fallback: only one summary left, stream it as a single-chunk
+    return partial_summaries[0], None, source_type, None  # already done, no streaming needed
 
 
 # UI
@@ -582,26 +591,78 @@ if summarize_btn:
         st.error("The URL entered does not appear to be valid. Please double-check.")
     else:
         try:
-            with st.spinner("Analyzing and summarizing content..."):
-                summary = summarize_url(url)
+            # Step 1: Load & prepare (show spinner during heavy lifting)
+            with st.spinner("Loading and processing content..."):
+                final_input, is_single_chunk, source_type, final_chain = prepare_final_input(url)
 
-            word_count = len(summary.split())
-            char_count = len(summary)
-            source_type = "YouTube" if ("youtube.com" in url or "youtu.be" in url) else "Webpage"
+            # Step 2: Stream or display the final summary
+            summary = ""
 
-            st.markdown(f"""
-            <div class="summary-wrap">
-                <div class="summary-header">
-                    <span class="summary-tag">Summary</span>
+            # Case: already fully resolved (edge case fallback)
+            if is_single_chunk is None:
+                summary = final_input
+                word_count = len(summary.split())
+                char_count = len(summary)
+                st.markdown(f"""
+                <div class="summary-wrap">
+                    <div class="summary-header"><span class="summary-tag">Summary</span></div>
+                    <div class="summary-body">{summary}</div>
+                    <div class="stats-row">
+                        <span class="stat-pill"><b>{word_count}</b> words</span>
+                        <span class="stat-pill"><b>{char_count}</b> characters</span>
+                        <span class="stat-pill"><b>{source_type}</b> source</span>
+                    </div>
                 </div>
-                <div class="summary-body">{summary}</div>
-                <div class="stats-row">
-                    <span class="stat-pill"><b>{word_count}</b> words</span>
-                    <span class="stat-pill"><b>{char_count}</b> characters</span>
-                    <span class="stat-pill"><b>{source_type}</b> source</span>
+                """, unsafe_allow_html=True)
+
+            else:
+                # Streaming: show the card shell immediately, stream text inside
+                st.markdown("""
+                <div class="summary-wrap" id="summary-card">
+                    <div class="summary-header"><span class="summary-tag">Summary</span></div>
                 </div>
-            </div>
-            """, unsafe_allow_html=True)
+                """, unsafe_allow_html=True)
+
+                stream_placeholder = st.empty()
+
+                input_key = "text"
+                stream = final_chain.stream({input_key: final_input})
+
+                for chunk in stream:
+                    summary += chunk
+                    stream_placeholder.markdown(
+                        f"""<div class="summary-body" style="
+                            font-family:'DM Sans',sans-serif;
+                            font-size:0.97rem;
+                            font-weight:300;
+                            line-height:1.8;
+                            color:#C8D0E0;
+                            white-space:pre-wrap;
+                            margin-top: -0.5rem;
+                        ">{summary}▌</div>""",
+                        unsafe_allow_html=True
+                    )
+
+                # Final render without cursor
+                word_count = len(summary.split())
+                char_count = len(summary)
+                stream_placeholder.markdown(
+                    f"""<div class="summary-body" style="
+                        font-family:'DM Sans',sans-serif;
+                        font-size:0.97rem;
+                        font-weight:300;
+                        line-height:1.8;
+                        color:#C8D0E0;
+                        white-space:pre-wrap;
+                        margin-top: -0.5rem;
+                    ">{summary}</div>
+                    <div class="stats-row" style="display:flex;gap:1rem;margin-top:1rem;">
+                        <span class="stat-pill" style="font-family:'DM Sans',sans-serif;font-size:0.72rem;color:#6B7FA3;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:6px;padding:0.28rem 0.7rem;"><b>{word_count}</b> words</span>
+                        <span class="stat-pill" style="font-family:'DM Sans',sans-serif;font-size:0.72rem;color:#6B7FA3;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:6px;padding:0.28rem 0.7rem;"><b>{char_count}</b> characters</span>
+                        <span class="stat-pill" style="font-family:'DM Sans',sans-serif;font-size:0.72rem;color:#6B7FA3;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:6px;padding:0.28rem 0.7rem;"><b>{source_type}</b> source</span>
+                    </div>""",
+                    unsafe_allow_html=True
+                )
 
             st.download_button(
                 label="↓ Download as .txt",
