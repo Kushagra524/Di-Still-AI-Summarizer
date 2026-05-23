@@ -399,6 +399,13 @@ def summarize_url(url: str) -> str:
 
 
 # UI 
+st.markdown("""
+<style>
+.hero-sub {
+    text-align: center;
+}
+</style>
+""", unsafe_allow_html=True)
 
 st.markdown("""
 <div class="hero-wrap">
