@@ -404,7 +404,7 @@ st.markdown("""
 <div class="hero-wrap">
     <div class="hero-badge">Powered by Groq + LangChain</div>
     <h1 class="hero-title">Extract what<br><span>actually matters</span></h1>
-    <p class="hero-sub" style="text-align: center;">>Paste any webpage , article , blog or research paperr. Get a precise, structured summary in seconds.</p>
+    <p class="hero-sub" style="text-align: center;">Paste any webpage , article , blog or research paperr. Get a precise, structured summary in seconds.</p>
 </div>
 """, unsafe_allow_html=True)
 
