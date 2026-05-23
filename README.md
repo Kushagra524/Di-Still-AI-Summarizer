@@ -355,11 +355,6 @@ Contributions are welcome.
 3. Commit changes
 4. Open Pull Request
 
----
-
-# 📜 License
-
-MIT License
 
 ---
 
